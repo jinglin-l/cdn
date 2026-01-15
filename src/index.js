@@ -124,6 +124,7 @@ function dashboardPage() {
     .empty { color: #666; font-style: italic; }
     .delete-btn { padding: 5px 10px; background: #c00; font-size: 12px; }
     .delete-btn:hover { background: #900; }
+    #search { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 4px; margin-bottom: 10px; }
     footer { margin-top: 40px; padding-top: 20px; border-top: 1px solid #eee; text-align: center; color: #999; font-size: 14px; }
     footer a { color: #666; }
     .upload-success { font-family: monospace; background: #e0ffe0; padding: 10px; border-radius: 4px; margin-top: 10px; word-break: break-all; display: none; }
@@ -150,6 +151,8 @@ function dashboardPage() {
     <div class="upload-success" id="uploadSuccess"></div>
   </div>
 
+  <input type="text" id="search" placeholder="search files..." oninput="filterFiles()">
+
   <table>
     <thead>
       <tr>
@@ -172,6 +175,8 @@ function dashboardPage() {
       document.getElementById('adminBtn').style.display = 'block';
     }
 
+    let allFiles = [];
+
     async function loadFiles() {
       const res = await fetch('/api/list', {
         method: 'POST',
@@ -184,10 +189,21 @@ function dashboardPage() {
         return;
       }
       const data = await res.json();
-      const files = data.files;
+      allFiles = data.files;
+      renderFiles(allFiles);
+    }
+
+    function filterFiles() {
+      const query = document.getElementById('search').value.toLowerCase();
+      const filtered = allFiles.filter(f => f.originalName.toLowerCase().includes(query));
+      renderFiles(filtered, query.length > 0);
+    }
+
+    function renderFiles(files, isFiltered = false) {
       const tbody = document.getElementById('files');
       if (files.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="5" class="empty">no files uploaded yet</td></tr>';
+        const msg = isFiltered ? 'no matching files' : 'no files uploaded yet';
+        tbody.innerHTML = '<tr><td colspan="5" class="empty">' + msg + '</td></tr>';
         return;
       }
       tbody.innerHTML = files.map(f => \`
