@@ -269,7 +269,7 @@ function dashboardPage() {
 
     loadFiles();
   </script>
-  <footer><a href="/api">api docs</a></footer>
+  <footer><a href="/api">api docs</a> | <a href="https://github.com/neelr/cdn">source</a></footer>
 </body>
 </html>`;
 }
