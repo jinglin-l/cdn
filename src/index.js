@@ -122,6 +122,12 @@ function dashboardPage() {
     .admin-btn { float: right; background: #0066cc; margin-right: 10px; display: none; }
     .admin-btn:hover { background: #0052a3; }
     .empty { color: #666; font-style: italic; }
+    .delete-btn { padding: 5px 10px; background: #c00; font-size: 12px; }
+    .delete-btn:hover { background: #900; }
+    .upload-success { font-family: monospace; background: #e0ffe0; padding: 10px; border-radius: 4px; margin-top: 10px; word-break: break-all; display: none; }
+    .upload-success a { color: #0066cc; }
+    .copy-btn { padding: 5px 10px; margin-left: 10px; font-size: 12px; background: #28a745; }
+    .copy-btn:hover { background: #218838; }
   </style>
 </head>
 <body>
@@ -139,15 +145,17 @@ function dashboardPage() {
       <option value="2592000000">30 days</option>
     </select>
     <button onclick="upload()" id="uploadBtn">upload</button>
+    <div class="upload-success" id="uploadSuccess"></div>
   </div>
 
   <table>
     <thead>
       <tr>
-        <th>url</th>
-        <th>original name</th>
+        <th>name</th>
         <th>size</th>
         <th>uploaded</th>
+        <th>expires</th>
+        <th></th>
       </tr>
     </thead>
     <tbody id="files"></tbody>
@@ -177,15 +185,16 @@ function dashboardPage() {
       const files = data.files;
       const tbody = document.getElementById('files');
       if (files.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="4" class="empty">no files uploaded yet</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="5" class="empty">no files uploaded yet</td></tr>';
         return;
       }
       tbody.innerHTML = files.map(f => \`
         <tr>
-          <td><a href="\${f.url}" target="_blank">\${f.url}</a></td>
-          <td>\${f.originalName}</td>
+          <td><a href="\${f.url}" target="_blank">\${f.originalName}</a></td>
           <td>\${formatSize(f.size)}</td>
           <td>\${new Date(f.uploaded).toLocaleString()}</td>
+          <td>\${f.expires ? new Date(f.expires).toLocaleString() : 'never'}</td>
+          <td><button class="delete-btn" onclick="deleteFile('\${f.url}')">✕</button></td>
         </tr>
       \`).join('');
     }
@@ -218,10 +227,37 @@ function dashboardPage() {
 
       if (data.success) {
         document.getElementById('file').value = '';
+        const fullUrl = window.location.origin + data.url;
+        const successDiv = document.getElementById('uploadSuccess');
+        successDiv.innerHTML = \`<a href="\${data.url}" target="_blank">\${fullUrl}</a><button class="copy-btn" onclick="copyLink('\${fullUrl}', this)">copy</button>\`;
+        successDiv.style.display = 'block';
         loadFiles();
       } else {
         alert('upload failed: ' + data.error);
       }
+    }
+
+    async function deleteFile(url) {
+      if (!confirm('delete this file? this cannot be undone.')) return;
+      const key = url.substring(1); // remove leading /
+      const res = await fetch('/api/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token, key })
+      });
+      const data = await res.json();
+      if (data.success) {
+        loadFiles();
+      } else {
+        alert('delete failed: ' + data.error);
+      }
+    }
+
+    function copyLink(url, btn) {
+      navigator.clipboard.writeText(url).then(() => {
+        btn.textContent = 'copied!';
+        setTimeout(() => btn.textContent = 'copy', 2000);
+      });
     }
 
     function logout() {
@@ -541,14 +577,15 @@ export default {
 
       const owner = hashToken(token);
       const { results } = await env.DB.prepare(
-        'SELECT key, original_name, size, uploaded FROM files WHERE owner = ? ORDER BY uploaded DESC'
+        'SELECT key, original_name, size, uploaded, expires FROM files WHERE owner = ? ORDER BY uploaded DESC'
       ).bind(owner).all();
 
       const files = results.map(r => ({
         url: '/' + r.key,
         originalName: r.original_name,
         size: r.size,
-        uploaded: r.uploaded
+        uploaded: r.uploaded,
+        expires: r.expires
       }));
 
       const admin = await isAdmin(token, env.DB);
@@ -596,6 +633,29 @@ export default {
       ).bind(key, owner, file.name, file.type || 'application/octet-stream', file.size, expires).run();
 
       return Response.json({ success: true, url: '/' + key });
+    }
+
+    // API: Delete file
+    if (path === '/api/delete' && request.method === 'POST') {
+      const { token, key } = await request.json();
+
+      if (!await isValidToken(token, env.DB)) {
+        return Response.json({ success: false, error: 'Invalid token' }, { status: 401 });
+      }
+
+      const owner = hashToken(token);
+      const file = await env.DB.prepare(
+        'SELECT key FROM files WHERE key = ? AND owner = ?'
+      ).bind(key, owner).first();
+
+      if (!file) {
+        return Response.json({ success: false, error: 'File not found' }, { status: 404 });
+      }
+
+      await env.CDN_BUCKET.delete(key);
+      await env.DB.prepare('DELETE FROM files WHERE key = ?').bind(key).run();
+
+      return Response.json({ success: true });
     }
 
     // Serve files
