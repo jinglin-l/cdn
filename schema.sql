@@ -11,7 +11,9 @@ CREATE TABLE IF NOT EXISTS files (
   original_name TEXT NOT NULL,
   content_type TEXT NOT NULL,
   size INTEGER NOT NULL,
-  uploaded TEXT DEFAULT CURRENT_TIMESTAMP
+  uploaded TEXT DEFAULT CURRENT_TIMESTAMP,
+  expires TEXT DEFAULT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_owner ON files(owner);
+CREATE INDEX IF NOT EXISTS idx_expires ON files(expires);
