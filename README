@@ -5,7 +5,7 @@ cdn.neelr.dev
 ## cli
 
 ```bash
-curl -fsSL https://cdn.neelr.dev/b0XdfX.sh | bash
+curl -fsSL https://cdn.neelr.dev/Arenxq.sh | bash
 ```
 
 then:
@@ -16,6 +16,8 @@ cdn file.png -e 7d          # upload with 7 day expiry
 cdn -l                      # list files
 cdn -d <key>                # delete
 ```
+
+supports files up to 5TB via automatic multipart upload.
 
 ## screenshot auto-upload (macos)
 
@@ -30,15 +32,21 @@ cdn --toggle-delete                   # toggle delete after upload (default: on)
 
 ## api
 
-all endpoints require a valid token.
+all endpoints require a valid token. see /api for full docs.
 
 POST /api/upload
-  upload a file
+  upload a file (< 100MB)
   body: multipart/form-data
     - token: string (required)
     - file: file (required)
-    - expiry: number (optional, ms until expiration: 3600000=1h, 86400000=1d, 604800000=7d, 2592000000=30d)
+    - expiry: number (optional, ms until expiration)
   response: { success: true, url: "/abc123.png" }
+
+for files > 100MB, use multipart upload:
+  POST /api/upload/init → { uploadId, key }
+  POST /api/upload/part (headers: X-Token, X-Upload-Id, X-Upload-Key, X-Part-Number) → { etag }
+  POST /api/upload/complete → { url }
+  POST /api/upload/abort (cleanup failed uploads)
 
 POST /api/list
   list your files

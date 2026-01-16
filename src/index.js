@@ -149,6 +149,12 @@ function dashboardPage() {
       <option value="2592000000">30 days</option>
     </select>
     <button onclick="upload()" id="uploadBtn">upload</button>
+    <div class="progress-container" id="progressContainer" style="display: none; margin-top: 10px;">
+      <div style="background: #eee; border-radius: 4px; height: 20px; overflow: hidden;">
+        <div id="progressBar" style="background: #4caf50; height: 100%; width: 0%; transition: width 0.3s;"></div>
+      </div>
+      <div id="progressText" style="text-align: center; margin-top: 5px; font-size: 14px;">0%</div>
+    </div>
     <div class="upload-success" id="uploadSuccess"></div>
   </div>
 
@@ -224,35 +230,152 @@ function dashboardPage() {
       return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
     }
 
+    const CHUNK_SIZE = 50 * 1024 * 1024; // 50MB chunks (below 100MB Worker limit)
+
+    function updateProgress(percent, text) {
+      document.getElementById('progressContainer').style.display = 'block';
+      document.getElementById('progressBar').style.width = percent + '%';
+      document.getElementById('progressText').textContent = text || percent + '%';
+    }
+
+    function hideProgress() {
+      document.getElementById('progressContainer').style.display = 'none';
+      document.getElementById('progressBar').style.width = '0%';
+    }
+
     async function upload() {
       const file = document.getElementById('file').files[0];
       if (!file) return alert('select a file');
 
       const btn = document.getElementById('uploadBtn');
       btn.disabled = true;
-      btn.textContent = 'uploading...';
-
       const expiry = document.getElementById('expiry').value;
-      const formData = new FormData();
-      formData.append('token', token);
-      formData.append('file', file);
-      if (expiry) formData.append('expiry', expiry);
 
-      const res = await fetch('/api/upload', { method: 'POST', body: formData });
-      const data = await res.json();
+      // Use multipart upload for files > 50MB
+      if (file.size > CHUNK_SIZE) {
+        btn.textContent = 'initializing...';
+        try {
+          await multipartUpload(file, expiry);
+        } catch (err) {
+          hideProgress();
+          btn.disabled = false;
+          btn.textContent = 'upload';
+          alert('upload failed: ' + err.message);
+          return;
+        }
+      } else {
+        btn.textContent = 'uploading...';
+        const formData = new FormData();
+        formData.append('token', token);
+        formData.append('file', file);
+        if (expiry) formData.append('expiry', expiry);
+
+        const res = await fetch('/api/upload', { method: 'POST', body: formData });
+        const data = await res.json();
+
+        btn.disabled = false;
+        btn.textContent = 'upload';
+
+        if (data.success) {
+          document.getElementById('file').value = '';
+          const fullUrl = window.location.origin + data.url;
+          const successDiv = document.getElementById('uploadSuccess');
+          successDiv.innerHTML = \`<a href="\${data.url}" target="_blank">\${fullUrl}</a><button class="copy-btn" onclick="copyLink('\${fullUrl}', this)">copy</button>\`;
+          successDiv.style.display = 'block';
+          loadFiles();
+        } else {
+          alert('upload failed: ' + data.error);
+        }
+        return;
+      }
 
       btn.disabled = false;
       btn.textContent = 'upload';
+    }
 
-      if (data.success) {
+    async function multipartUpload(file, expiry) {
+      // Initialize multipart upload
+      const initRes = await fetch('/api/upload/init', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          token,
+          filename: file.name,
+          contentType: file.type || 'application/octet-stream',
+          size: file.size
+        })
+      });
+      const initData = await initRes.json();
+      if (!initData.success) throw new Error(initData.error);
+
+      const { uploadId, key } = initData;
+      const parts = [];
+      const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+
+      updateProgress(0, 'uploading 0/' + totalChunks + ' chunks');
+
+      try {
+        // Upload each chunk
+        for (let i = 0; i < totalChunks; i++) {
+          const start = i * CHUNK_SIZE;
+          const end = Math.min(start + CHUNK_SIZE, file.size);
+          const chunk = file.slice(start, end);
+          const partNumber = i + 1;
+
+          const partRes = await fetch('/api/upload/part', {
+            method: 'POST',
+            headers: {
+              'X-Token': token,
+              'X-Upload-Id': uploadId,
+              'X-Upload-Key': key,
+              'X-Part-Number': partNumber.toString()
+            },
+            body: chunk
+          });
+          const partData = await partRes.json();
+          if (!partData.success) throw new Error(partData.error);
+
+          parts.push({ partNumber: partData.partNumber, etag: partData.etag });
+
+          const percent = Math.round(((i + 1) / totalChunks) * 100);
+          updateProgress(percent, 'uploading ' + (i + 1) + '/' + totalChunks + ' chunks');
+        }
+
+        // Complete the upload
+        updateProgress(100, 'finalizing...');
+        const completeRes = await fetch('/api/upload/complete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            token,
+            uploadId,
+            key,
+            parts,
+            filename: file.name,
+            contentType: file.type || 'application/octet-stream',
+            size: file.size,
+            expiry
+          })
+        });
+        const completeData = await completeRes.json();
+        if (!completeData.success) throw new Error(completeData.error);
+
+        hideProgress();
         document.getElementById('file').value = '';
-        const fullUrl = window.location.origin + data.url;
+        const fullUrl = window.location.origin + completeData.url;
         const successDiv = document.getElementById('uploadSuccess');
-        successDiv.innerHTML = \`<a href="\${data.url}" target="_blank">\${fullUrl}</a><button class="copy-btn" onclick="copyLink('\${fullUrl}', this)">copy</button>\`;
+        successDiv.innerHTML = \`<a href="\${completeData.url}" target="_blank">\${fullUrl}</a><button class="copy-btn" onclick="copyLink('\${fullUrl}', this)">copy</button>\`;
         successDiv.style.display = 'block';
         loadFiles();
-      } else {
-        alert('upload failed: ' + data.error);
+
+      } catch (err) {
+        // Abort the upload on error
+        await fetch('/api/upload/abort', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token, uploadId, key })
+        }).catch(() => {});
+        throw err;
       }
     }
 
@@ -488,12 +611,35 @@ export default {
 all endpoints require a valid token.
 
 POST /api/upload
-  upload a file
+  upload a file (< 100MB)
   body: multipart/form-data
     - token: string (required)
     - file: file (required)
     - expiry: number (optional, ms until expiration: 3600000=1h, 86400000=1d, 604800000=7d, 2592000000=30d)
   response: { success: true, url: "/abc123.png" }
+
+MULTIPART UPLOAD (for files > 100MB, up to 5TB):
+
+POST /api/upload/init
+  initialize multipart upload
+  body: { "token": "...", "filename": "video.mp4", "contentType": "video/mp4", "size": 1234567890 }
+  response: { success: true, uploadId: "...", key: "abc123.mp4" }
+
+POST /api/upload/part
+  upload a chunk (max 100MB per chunk)
+  headers: X-Token, X-Upload-Id, X-Upload-Key, X-Part-Number
+  body: raw binary chunk data
+  response: { success: true, partNumber: 1, etag: "..." }
+
+POST /api/upload/complete
+  complete multipart upload
+  body: { "token": "...", "uploadId": "...", "key": "...", "parts": [{ partNumber, etag }], "filename": "...", "contentType": "...", "size": 123, "expiry": "..." }
+  response: { success: true, url: "/abc123.mp4" }
+
+POST /api/upload/abort
+  abort multipart upload (cleanup)
+  body: { "token": "...", "uploadId": "...", "key": "..." }
+  response: { success: true }
 
 POST /api/list
   list your files
@@ -639,7 +785,118 @@ POST /api/delete
       return Response.json({ files, isAdmin: admin });
     }
 
-    // API: Upload file
+    // API: Multipart upload - Initialize
+    if (path === '/api/upload/init' && request.method === 'POST') {
+      const { token, filename, contentType, size } = await request.json();
+
+      if (!await isValidToken(token, env.DB)) {
+        return Response.json({ success: false, error: 'Invalid token' }, { status: 401 });
+      }
+
+      if (!filename) {
+        return Response.json({ success: false, error: 'No filename' }, { status: 400 });
+      }
+
+      const ext = getExtension(filename);
+      let key, attempts = 0;
+
+      // Generate unique key
+      do {
+        key = generateId() + (ext ? '.' + ext : '');
+        const existing = await env.DB.prepare('SELECT 1 FROM files WHERE key = ?').bind(key).first();
+        if (!existing) break;
+        attempts++;
+      } while (attempts < 10);
+
+      if (attempts >= 10) {
+        return Response.json({ success: false, error: 'Could not generate unique ID' }, { status: 500 });
+      }
+
+      // Create multipart upload
+      const multipartUpload = await env.CDN_BUCKET.createMultipartUpload(key, {
+        httpMetadata: { contentType: contentType || 'application/octet-stream' }
+      });
+
+      return Response.json({
+        success: true,
+        uploadId: multipartUpload.uploadId,
+        key
+      });
+    }
+
+    // API: Multipart upload - Upload part
+    if (path === '/api/upload/part' && request.method === 'POST') {
+      const uploadId = request.headers.get('X-Upload-Id');
+      const key = request.headers.get('X-Upload-Key');
+      const partNumber = parseInt(request.headers.get('X-Part-Number'));
+      const token = request.headers.get('X-Token');
+
+      if (!await isValidToken(token, env.DB)) {
+        return Response.json({ success: false, error: 'Invalid token' }, { status: 401 });
+      }
+
+      if (!uploadId || !key || !partNumber) {
+        return Response.json({ success: false, error: 'Missing upload parameters' }, { status: 400 });
+      }
+
+      // Resume the multipart upload and upload this part
+      const multipartUpload = env.CDN_BUCKET.resumeMultipartUpload(key, uploadId);
+      const uploadedPart = await multipartUpload.uploadPart(partNumber, request.body);
+
+      return Response.json({
+        success: true,
+        partNumber: uploadedPart.partNumber,
+        etag: uploadedPart.etag
+      });
+    }
+
+    // API: Multipart upload - Complete
+    if (path === '/api/upload/complete' && request.method === 'POST') {
+      const { token, uploadId, key, parts, filename, contentType, size, expiry } = await request.json();
+
+      if (!await isValidToken(token, env.DB)) {
+        return Response.json({ success: false, error: 'Invalid token' }, { status: 401 });
+      }
+
+      if (!uploadId || !key || !parts || !Array.isArray(parts)) {
+        return Response.json({ success: false, error: 'Missing parameters' }, { status: 400 });
+      }
+
+      // Complete the multipart upload
+      const multipartUpload = env.CDN_BUCKET.resumeMultipartUpload(key, uploadId);
+      await multipartUpload.complete(parts);
+
+      // Insert into DB
+      const owner = hashToken(token);
+      const expires = expiry ? new Date(Date.now() + parseInt(expiry)).toISOString() : null;
+
+      await env.DB.prepare(
+        'INSERT INTO files (key, owner, original_name, content_type, size, expires) VALUES (?, ?, ?, ?, ?, ?)'
+      ).bind(key, owner, filename || key, contentType || 'application/octet-stream', size || 0, expires).run();
+
+      return Response.json({ success: true, url: '/' + key });
+    }
+
+    // API: Multipart upload - Abort
+    if (path === '/api/upload/abort' && request.method === 'POST') {
+      const { token, uploadId, key } = await request.json();
+
+      if (!await isValidToken(token, env.DB)) {
+        return Response.json({ success: false, error: 'Invalid token' }, { status: 401 });
+      }
+
+      if (!uploadId || !key) {
+        return Response.json({ success: false, error: 'Missing parameters' }, { status: 400 });
+      }
+
+      // Abort the multipart upload
+      const multipartUpload = env.CDN_BUCKET.resumeMultipartUpload(key, uploadId);
+      await multipartUpload.abort();
+
+      return Response.json({ success: true });
+    }
+
+    // API: Upload file (for small files < 100MB)
     if (path === '/api/upload' && request.method === 'POST') {
       const formData = await request.formData();
       const token = formData.get('token');
@@ -736,23 +993,45 @@ POST /api/delete
     return new Response('Not Found', { status: 404 });
   },
 
-  // Cron handler to delete expired files
+  // Cron handler to delete expired files and cleanup orphaned uploads
   async scheduled(event, env, ctx) {
     const now = new Date().toISOString();
+    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
     // Get all expired files
     const { results: expiredFiles } = await env.DB.prepare(
       'SELECT key FROM files WHERE expires IS NOT NULL AND expires < ?'
     ).bind(now).all();
 
-    if (expiredFiles.length === 0) return;
-
-    // Delete from R2 and DB
+    // Delete expired files from R2 and DB
     for (const file of expiredFiles) {
       await env.CDN_BUCKET.delete(file.key);
       await env.DB.prepare('DELETE FROM files WHERE key = ?').bind(file.key).run();
     }
 
-    console.log(`Deleted ${expiredFiles.length} expired files`);
+    if (expiredFiles.length > 0) {
+      console.log(`Deleted ${expiredFiles.length} expired files`);
+    }
+
+    // Cleanup orphaned multipart uploads (older than 24 hours)
+    let abortedUploads = 0;
+    const incompleteUploads = await env.CDN_BUCKET.listMultipartUploads();
+
+    for (const upload of incompleteUploads.uploads || []) {
+      // Abort uploads older than 24 hours
+      if (new Date(upload.uploaded) < oneDayAgo) {
+        try {
+          const multipartUpload = env.CDN_BUCKET.resumeMultipartUpload(upload.key, upload.uploadId);
+          await multipartUpload.abort();
+          abortedUploads++;
+        } catch (e) {
+          // Ignore errors (upload may have been completed/aborted already)
+        }
+      }
+    }
+
+    if (abortedUploads > 0) {
+      console.log(`Aborted ${abortedUploads} orphaned multipart uploads`);
+    }
   }
 };

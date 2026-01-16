@@ -94,6 +94,8 @@ do_login() {
   fi
 }
 
+CHUNK_SIZE=$((50 * 1024 * 1024))  # 50MB chunks
+
 do_upload() {
   local file="$1"
   local expiry="$2"
@@ -101,8 +103,16 @@ do_upload() {
   [ -f "$file" ] || error "File not found: $file"
 
   local token=$(get_token)
+  local file_size=$(stat -f%z "$file" 2>/dev/null || stat -c%s "$file" 2>/dev/null)
+  local filename=$(basename "$file")
 
-  info "Uploading $(basename "$file")..."
+  # Use multipart upload for files > 50MB
+  if [ "$file_size" -gt "$CHUNK_SIZE" ]; then
+    do_multipart_upload "$file" "$expiry"
+    return
+  fi
+
+  info "Uploading $filename..."
 
   local curl_args=(-s -X POST "$CDN_URL/api/upload" -F "token=$token" -F "file=@$file")
   [ -n "$expiry" ] && curl_args+=(-F "expiry=$expiry")
@@ -122,6 +132,106 @@ do_upload() {
     fi
   else
     error "Upload failed: $response"
+  fi
+}
+
+do_multipart_upload() {
+  local file="$1"
+  local expiry="$2"
+  local token=$(get_token)
+  local filename=$(basename "$file")
+  local file_size=$(stat -f%z "$file" 2>/dev/null || stat -c%s "$file" 2>/dev/null)
+  local content_type=$(file -b --mime-type "$file")
+  local total_chunks=$(( (file_size + CHUNK_SIZE - 1) / CHUNK_SIZE ))
+
+  info "Large file detected ($(( file_size / 1048576 )) MB) - using multipart upload..."
+
+  # Initialize multipart upload
+  local init_response=$(curl -s -X POST "$CDN_URL/api/upload/init" \
+    -H "Content-Type: application/json" \
+    -d "{\"token\":\"$token\",\"filename\":\"$filename\",\"contentType\":\"$content_type\",\"size\":$file_size}")
+
+  if ! echo "$init_response" | grep -q '"success"[[:space:]]*:[[:space:]]*true'; then
+    error "Failed to initialize upload: $init_response"
+  fi
+
+  local upload_id=$(echo "$init_response" | json_value "uploadId")
+  local key=$(echo "$init_response" | json_value "key")
+
+  # Track uploaded parts
+  local parts_json="["
+  local first_part=true
+
+  # Upload chunks
+  for (( i=0; i<total_chunks; i++ )); do
+    local part_num=$((i + 1))
+    local offset=$((i * CHUNK_SIZE))
+    local this_chunk_size=$CHUNK_SIZE
+
+    # Last chunk may be smaller
+    if [ $((offset + this_chunk_size)) -gt "$file_size" ]; then
+      this_chunk_size=$((file_size - offset))
+    fi
+
+    echo -ne "\r\033[K${BLUE}Uploading chunk $part_num/$total_chunks...${NC}"
+
+    # Upload chunk using dd to extract bytes and curl to upload
+    # Use larger block size for better performance
+    local part_response=$(dd if="$file" bs=1048576 skip=$((offset / 1048576)) count=$((this_chunk_size / 1048576 + 1)) 2>/dev/null | head -c $this_chunk_size | \
+      curl -s -X POST "$CDN_URL/api/upload/part" \
+        -H "X-Token: $token" \
+        -H "X-Upload-Id: $upload_id" \
+        -H "X-Upload-Key: $key" \
+        -H "X-Part-Number: $part_num" \
+        -H "Content-Type: application/octet-stream" \
+        --data-binary @-)
+
+    if ! echo "$part_response" | grep -q '"success"[[:space:]]*:[[:space:]]*true'; then
+      # Abort on error
+      curl -s -X POST "$CDN_URL/api/upload/abort" \
+        -H "Content-Type: application/json" \
+        -d "{\"token\":\"$token\",\"uploadId\":\"$upload_id\",\"key\":\"$key\"}" >/dev/null 2>&1
+      echo
+      error "Failed to upload chunk $part_num: $part_response"
+    fi
+
+    local etag=$(echo "$part_response" | json_value "etag")
+    local part_number=$(echo "$part_response" | grep -o '"partNumber"[[:space:]]*:[[:space:]]*[0-9]*' | grep -o '[0-9]*$')
+
+    if [ "$first_part" = true ]; then
+      first_part=false
+    else
+      parts_json+=","
+    fi
+    parts_json+="{\"partNumber\":$part_number,\"etag\":\"$etag\"}"
+  done
+  parts_json+="]"
+
+  echo -ne "\r\033[K${BLUE}Finalizing...${NC}"
+
+  # Complete the upload
+  local expiry_json=""
+  [ -n "$expiry" ] && expiry_json=",\"expiry\":\"$expiry\""
+
+  local complete_response=$(curl -s -X POST "$CDN_URL/api/upload/complete" \
+    -H "Content-Type: application/json" \
+    -d "{\"token\":\"$token\",\"uploadId\":\"$upload_id\",\"key\":\"$key\",\"parts\":$parts_json,\"filename\":\"$filename\",\"contentType\":\"$content_type\",\"size\":$file_size$expiry_json}")
+
+  echo -ne "\r\033[K"
+
+  if echo "$complete_response" | grep -q '"success"[[:space:]]*:[[:space:]]*true'; then
+    local url=$(echo "$complete_response" | json_value "url")
+    success "${CDN_URL}${url}"
+
+    if command -v pbcopy &>/dev/null; then
+      echo -n "${CDN_URL}${url}" | pbcopy
+      echo "(copied)"
+    elif command -v xclip &>/dev/null; then
+      echo -n "${CDN_URL}${url}" | xclip -selection clipboard
+      echo "(copied)"
+    fi
+  else
+    error "Failed to complete upload: $complete_response"
   fi
 }
 
