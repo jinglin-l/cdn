@@ -70,7 +70,7 @@ function loginPage() {
   <p class="error" id="error">invalid token</p>
   <script>
     // Redirect if already logged in
-    if (sessionStorage.getItem('token')) {
+    if (localStorage.getItem('token')) {
       window.location.href = '/dash';
     }
     async function login() {
@@ -82,8 +82,8 @@ function loginPage() {
       });
       if (res.ok) {
         const data = await res.json();
-        sessionStorage.setItem('token', token);
-        sessionStorage.setItem('isAdmin', data.isAdmin ? '1' : '0');
+        localStorage.setItem('token', token);
+        localStorage.setItem('isAdmin', data.isAdmin ? '1' : '0');
         window.location.href = '/dash';
       } else {
         document.getElementById('error').style.display = 'block';
@@ -168,11 +168,11 @@ function dashboardPage() {
   </table>
 
   <script>
-    const token = sessionStorage.getItem('token');
+    const token = localStorage.getItem('token');
     if (!token) window.location.href = '/';
 
     // Show admin button if user is admin
-    if (sessionStorage.getItem('isAdmin') === '1') {
+    if (localStorage.getItem('isAdmin') === '1') {
       document.getElementById('adminBtn').style.display = 'block';
     }
 
@@ -185,7 +185,7 @@ function dashboardPage() {
         body: JSON.stringify({ token })
       });
       if (!res.ok) {
-        sessionStorage.clear();
+        localStorage.clear();
         window.location.href = '/';
         return;
       }
@@ -280,7 +280,7 @@ function dashboardPage() {
     }
 
     function logout() {
-      sessionStorage.clear();
+      localStorage.clear();
       window.location.href = '/';
     }
 
@@ -349,7 +349,7 @@ function adminPage() {
   </table>
 
   <script>
-    const token = sessionStorage.getItem('token');
+    const token = localStorage.getItem('token');
     if (!token) window.location.href = '/';
 
     async function loadTokens() {
@@ -359,7 +359,7 @@ function adminPage() {
         body: JSON.stringify({ token })
       });
       if (!res.ok) {
-        sessionStorage.clear();
+        localStorage.clear();
         window.location.href = '/';
         return;
       }
@@ -451,7 +451,7 @@ function adminPage() {
     }
 
     function logout() {
-      sessionStorage.clear();
+      localStorage.clear();
       window.location.href = '/';
     }
 
