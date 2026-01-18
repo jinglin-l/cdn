@@ -61,6 +61,7 @@ SCREENSHOT AUTO-UPLOAD (macOS):
   cdn --install-screenshot [dir]  Install daemon (default: ~/Desktop)
   cdn --uninstall-screenshot      Remove auto-upload daemon
   cdn --toggle-delete             Toggle delete screenshot after upload
+  cdn --screenshot-pattern <pat>  Set glob pattern (default: Screenshot*.png)
 
 EXPIRY OPTIONS:
   -e 30m   Expire in 30 minutes
@@ -76,6 +77,8 @@ EXAMPLES:
   cdn -d x7k2m9.png
   cdn --install-screenshot
   cdn --install-screenshot ~/Screenshots
+  cdn --screenshot-pattern "Screen*.png"
+  cdn --screenshot-pattern "*.png"
 EOF
 }
 
@@ -321,7 +324,7 @@ install_screenshot() {
   watch_dir="${watch_dir/#\~/$HOME}"
   [ -d "$watch_dir" ] || error "Directory not found: $watch_dir"
 
-  local daemon_url="https://cdn.neelr.dev/7IhA0E.sh"
+  local daemon_url="https://cdn.neelr.dev/VyMOt1.sh"
   local daemon_dest="$CONFIG_DIR/screenshot-daemon.sh"
   local plist_path="$HOME/Library/LaunchAgents/com.cdn.screenshot.plist"
 
@@ -407,6 +410,12 @@ toggle_delete() {
   fi
 }
 
+set_screenshot_pattern() {
+  [ -z "$1" ] && error "Usage: cdn --screenshot-pattern <pattern>"
+  set_config "screenshot_pattern" "$1"
+  success "Screenshot pattern: $1"
+}
+
 # Parse arguments
 [ $# -eq 0 ] && { show_help; exit 0; }
 
@@ -431,6 +440,8 @@ while [ $# -gt 0 ]; do
       uninstall_screenshot; exit 0 ;;
     --toggle-delete)
       toggle_delete; exit 0 ;;
+    --screenshot-pattern)
+      set_screenshot_pattern "$2"; exit 0 ;;
     -e|--expires)
       val="$2"
       if [[ "$val" =~ ^([0-9]+)m$ ]]; then

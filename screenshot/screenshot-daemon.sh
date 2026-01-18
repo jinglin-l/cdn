@@ -31,11 +31,15 @@ TOKEN=$(get_config "token")
 WATCH_DIR=$(get_config "screenshot_watch_dir")
 [ -n "$WATCH_DIR" ] || WATCH_DIR="$HOME/Desktop"
 
+# Get screenshot pattern (default to macOS screenshot naming)
+SCREENSHOT_PATTERN=$(get_config "screenshot_pattern")
+[ -n "$SCREENSHOT_PATTERN" ] || SCREENSHOT_PATTERN="Screenshot*.png"
+
 # Get last uploaded file to avoid duplicates
 LAST_UPLOADED=$(get_config "last_screenshot")
 
-# Find the most recent screenshot
-file=$(ls -t "$WATCH_DIR"/Screenshot*.png 2>/dev/null | head -1)
+# Find the most recent screenshot matching pattern
+file=$(ls -t "$WATCH_DIR"/$SCREENSHOT_PATTERN 2>/dev/null | head -1)
 
 if [ -n "$file" ] && [ -f "$file" ]; then
   # Check if created in last 5 seconds
