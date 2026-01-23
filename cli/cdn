@@ -136,7 +136,7 @@ do_upload() {
 
   info "Uploading $filename..."
 
-  local curl_args=(-s -X POST "$CDN_URL/api/upload" -F "token=$token" -F "file=@$file")
+  local curl_args=(-s -X POST "$CDN_URL/api/upload" -F "token=$token" -F "file=@\"$file\"")
   [ -n "$expiry" ] && curl_args+=(-F "expiry=$expiry")
 
   response=$(curl "${curl_args[@]}")
